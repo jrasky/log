@@ -20,6 +20,8 @@ harness = false
 libc = "0.2"
 
 [features]
+freestanding = []
+
 max_level_off   = []
 max_level_error = []
 max_level_warn  = []

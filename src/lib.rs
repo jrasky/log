@@ -125,40 +125,39 @@
 //! we'll want to set the maximum log level to `Info`, since we ignore any
 //! `Debug` or `Trace` level log messages. A logging framework should provide a
 //! function that wraps a call to `set_logger`, handling initialization of the
-//! logger:
-//!
-//! ```rust
-//! # extern crate log;
-//! # use log::{LogLevel, LogLevelFilter, SetLoggerError, LogMetadata};
-//! # struct SimpleLogger;
-//! # impl log::Log for SimpleLogger {
-//! #   fn enabled(&self, _: &LogMetadata) -> bool { false }
-//! #   fn log(&self, _: &log::LogRecord) {}
-//! # }
-//! # fn main() {}
-//! pub fn init() -> Result<(), SetLoggerError> {
-//!     log::set_logger(|max_log_level| {
-//!         max_log_level.set(LogLevelFilter::Info);
-//!         Box::new(SimpleLogger)
-//!     })
-//! }
-//! ```
-
+//! logger.
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://www.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/log/")]
 #![warn(missing_docs)]
+// core_slices_ext is only needed for freestanding feature
+#![allow(unused_features)]
+#![feature(no_std)]
+#![feature(core_slice_ext)]
+#![feature(collections)]
+#![no_std]
 
+#[cfg(not(feature = "freestanding"))]
 extern crate libc;
+#[cfg(not(feature = "freestanding"))]
+extern crate std;
+#[cfg(test)]
+extern crate collections;
 
+#[cfg(not(feature = "freestanding"))]
 use std::ascii::AsciiExt;
-use std::cmp;
+#[cfg(not(feature = "freestanding"))]
 use std::error;
-use std::fmt;
-use std::mem;
-use std::ops::Deref;
-use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering};
+#[cfg(not(feature = "freestanding"))]
+use std::boxed::Box;
+
+use core::cmp;
+use core::fmt;
+use core::mem;
+use core::ops::Deref;
+use core::str::FromStr;
+use core::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering};
+
 mod macros;
 
 // The setup here is a bit weird to make at_exit work.
@@ -183,6 +182,8 @@ mod macros;
 // increment and decrement it, but the interval in between is small enough that
 // the wait is really just for the active log calls to finish.
 static LOGGER: AtomicUsize = ATOMIC_USIZE_INIT;
+// when freestanding, do not refcount the logger instance
+#[cfg(not(feature = "freestanding"))]
 static REFCOUNT: AtomicUsize = ATOMIC_USIZE_INIT;
 
 const UNINITIALIZED: usize = 0;
@@ -270,15 +271,29 @@ fn ok_or<T, E>(t: Option<T>, e: E) -> Result<T, E> {
     }
 }
 
+#[cfg(not(feature = "freestanding"))]
 impl FromStr for LogLevel {
     type Err = ();
     fn from_str(level: &str) -> Result<LogLevel, ()> {
         ok_or(LOG_LEVEL_NAMES.iter()
-                    .position(|&name| name.eq_ignore_ascii_case(level))
-                    .into_iter()
-                    .filter(|&idx| idx != 0)
-                    .map(|idx| LogLevel::from_usize(idx).unwrap())
-                    .next(), ())
+              .position(|&name| name.eq_ignore_ascii_case(level))
+              .into_iter()
+              .filter(|&idx| idx != 0)
+              .map(|idx| LogLevel::from_usize(idx).unwrap())
+              .next(), ())
+    }
+}
+
+#[cfg(feature = "freestanding")]
+impl FromStr for LogLevel {
+    type Err = ();
+    fn from_str(level: &str) -> Result<LogLevel, ()> {
+        ok_or(LOG_LEVEL_NAMES.iter()
+              .position(|&name| name == level)
+              .into_iter()
+              .filter(|&idx| idx != 0)
+              .map(|idx| LogLevel::from_usize(idx).unwrap())
+              .next(), ())
     }
 }
 
@@ -378,12 +393,23 @@ impl Ord for LogLevelFilter {
     }
 }
 
+#[cfg(not(feature = "freestanding"))]
 impl FromStr for LogLevelFilter {
     type Err = ();
     fn from_str(level: &str) -> Result<LogLevelFilter, ()> {
         ok_or(LOG_LEVEL_NAMES.iter()
-                    .position(|&name| name.eq_ignore_ascii_case(level))
-                    .map(|p| LogLevelFilter::from_usize(p).unwrap()), ())
+              .position(|&name| name.eq_ignore_ascii_case(level))
+              .map(|p| LogLevelFilter::from_usize(p).unwrap()), ())
+    }
+}
+
+#[cfg(feature = "freestanding")]
+impl FromStr for LogLevelFilter {
+    type Err = ();
+    fn from_str(level: &str) -> Result<LogLevelFilter, ()> {
+        ok_or(LOG_LEVEL_NAMES.iter()
+              .position(|&name| name == level)
+              .map(|p| LogLevelFilter::from_usize(p).unwrap()), ())
     }
 }
 
@@ -576,32 +602,85 @@ pub fn max_log_level() -> LogLevelFilter {
 /// This function does not typically need to be called manually. Logger
 /// implementations should provide an initialization method that calls
 /// `set_logger` internally.
+///
+/// ```rust
+/// # extern crate log;
+/// # use log::{LogLevel, LogLevelFilter, SetLoggerError, LogMetadata};
+/// # struct SimpleLogger;
+/// # impl log::Log for SimpleLogger {
+/// #   fn enabled(&self, _: &LogMetadata) -> bool { false }
+/// #   fn log(&self, _: &log::LogRecord) {}
+/// # }
+/// # fn main() {}
+/// pub fn init() -> Result<(), SetLoggerError> {
+///     log::set_logger(|max_log_level| {
+///         max_log_level.set(LogLevelFilter::Info);
+///         Box::new(SimpleLogger)
+///     })
+/// }
+/// ```
+#[cfg(not(feature = "freestanding"))]
 pub fn set_logger<M>(make_logger: M) -> Result<(), SetLoggerError>
-        where M: FnOnce(MaxLogLevelFilter) -> Box<Log> {
+    where M: FnOnce(MaxLogLevelFilter) -> Box<Log> {
+        if LOGGER.compare_and_swap(UNINITIALIZED, INITIALIZING,
+                                   Ordering::SeqCst) != UNINITIALIZED {
+            return Err(SetLoggerError(()));
+        }
+
+        let logger = Box::new(make_logger(MaxLogLevelFilter(())));
+        let logger = unsafe { mem::transmute::<Box<Box<Log>>, usize>(logger) };
+        LOGGER.store(logger, Ordering::SeqCst);
+
+        unsafe {
+            assert_eq!(libc::atexit(shutdown), 0);
+        }
+        return Ok(());
+
+        extern fn shutdown() {
+            // Set to INITIALIZING to prevent re-initialization after
+            let logger = LOGGER.swap(INITIALIZING, Ordering::SeqCst);
+            
+            while REFCOUNT.load(Ordering::SeqCst) != 0 {
+                // FIXME add a sleep here when it doesn't involve timers
+            }
+
+            unsafe { mem::transmute::<usize, Box<Box<Log>>>(logger); }
+        }
+    }
+
+/// Sets the global logger.
+///
+/// The `make_logger` closure is passed a `MaxLogLevel` object, which the
+/// logger should use to keep the global maximum log level in sync with the
+/// highest log level that the logger will not ignore.
+///
+/// This function may only be called once in the lifetime of a program. Any log
+/// events that occur before the call to `set_logger` completes will be
+/// ignored.
+///
+/// This function does not typically need to be called manually. Logger
+/// implementations should provide an initialization method that calls
+/// `set_logger` internally.
+///
+/// The closure passed to set_logger must return a pointer to a Log trait
+/// object. No checks are done to ensure this. Additionally, this function does
+/// not concern itself with the lifecycle of the logger. It is up to the
+/// programmer to ensure the object stays alive long enough, and is freed at the
+/// end of its use.
+#[cfg(feature = "freestanding")]
+pub fn set_logger<M>(make_logger: M) -> Result<(), SetLoggerError>
+    where M: FnOnce(MaxLogLevelFilter) -> *const &'static Log
+{
     if LOGGER.compare_and_swap(UNINITIALIZED, INITIALIZING,
                                Ordering::SeqCst) != UNINITIALIZED {
         return Err(SetLoggerError(()));
     }
 
-    let logger = Box::new(make_logger(MaxLogLevelFilter(())));
-    let logger = unsafe { mem::transmute::<Box<Box<Log>>, usize>(logger) };
+    let logger = make_logger(MaxLogLevelFilter(()));
+    let logger: usize = unsafe {mem::transmute(logger)};
     LOGGER.store(logger, Ordering::SeqCst);
 
-    unsafe {
-        assert_eq!(libc::atexit(shutdown), 0);
-    }
     return Ok(());
-
-    extern fn shutdown() {
-        // Set to INITIALIZING to prevent re-initialization after
-        let logger = LOGGER.swap(INITIALIZING, Ordering::SeqCst);
-
-        while REFCOUNT.load(Ordering::SeqCst) != 0 {
-            // FIXME add a sleep here when it doesn't involve timers
-        }
-
-        unsafe { mem::transmute::<usize, Box<Box<Log>>>(logger); }
-    }
 }
 
 /// The type returned by `set_logger` if `set_logger` has already been called.
@@ -616,18 +695,24 @@ impl fmt::Display for SetLoggerError {
     }
 }
 
+// only implement the Error trait when it's available
+#[cfg(not(feature = "freestanding"))]
 impl error::Error for SetLoggerError {
     fn description(&self) -> &str { "set_logger() called multiple times" }
 }
 
 struct LoggerGuard(usize);
 
+// no refcounting if freestanding
+#[cfg(not(feature = "freestanding"))]
 impl Drop for LoggerGuard {
     fn drop(&mut self) {
         REFCOUNT.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
+// when not freestanding, LOGGER is &Box<Log>
+#[cfg(not(feature = "freestanding"))]
 impl Deref for LoggerGuard {
     type Target = Box<Log>;
 
@@ -636,6 +721,17 @@ impl Deref for LoggerGuard {
     }
 }
 
+// when freestanding, LOGGER is &Log
+#[cfg(feature = "freestanding")]
+impl Deref for LoggerGuard {
+    type Target = &'static Log;
+    
+    fn deref(&self) -> &&'static Log {
+        unsafe { mem::transmute(self.0) }
+    }
+}
+
+#[cfg(not(feature = "freestanding"))]
 fn logger() -> Option<LoggerGuard> {
     REFCOUNT.fetch_add(1, Ordering::SeqCst);
     let logger = LOGGER.load(Ordering::SeqCst);
@@ -645,6 +741,12 @@ fn logger() -> Option<LoggerGuard> {
     } else {
         Some(LoggerGuard(logger))
     }
+}
+
+#[cfg(feature = "freestanding")]
+fn logger() -> Option<LoggerGuard> {
+    // no refcounting when freestanding
+    Some(LoggerGuard(LOGGER.load(Ordering::SeqCst)))
 }
 
 // WARNING
@@ -717,94 +819,136 @@ pub fn __static_max_level() -> LogLevelFilter {
 
 #[cfg(test)]
 mod tests {
-     use std::error::Error;
-     use super::{LogLevel, LogLevelFilter, SetLoggerError};
+    #[cfg(not(feature = "freestanding"))]
+    use std::error::Error;
+    use collections::string::ToString;
+    #[cfg(not(feature = "freestanding"))]
+    use super::{LogLevel, LogLevelFilter, SetLoggerError};
+    #[cfg(feature = "freestanding")]
+    use super::{LogLevel, LogLevelFilter};
 
-     #[test]
-     fn test_loglevelfilter_from_str() {
-         let tests = [
-             ("off",   Ok(LogLevelFilter::Off)),
-             ("error", Ok(LogLevelFilter::Error)),
-             ("warn",  Ok(LogLevelFilter::Warn)),
-             ("info",  Ok(LogLevelFilter::Info)),
-             ("debug", Ok(LogLevelFilter::Debug)),
-             ("trace", Ok(LogLevelFilter::Trace)),
-             ("OFF",   Ok(LogLevelFilter::Off)),
-             ("ERROR", Ok(LogLevelFilter::Error)),
-             ("WARN",  Ok(LogLevelFilter::Warn)),
-             ("INFO",  Ok(LogLevelFilter::Info)),
-             ("DEBUG", Ok(LogLevelFilter::Debug)),
-             ("TRACE", Ok(LogLevelFilter::Trace)),
-             ("asdf",  Err(())),
-         ];
-         for &(s, ref expected) in &tests {
-             assert_eq!(expected, &s.parse());
-         }
-     }
+    #[cfg(not(feature = "freestanding"))]
+    #[test]
+    fn test_loglevelfilter_from_str() {
+        let tests = [
+            ("off",   Ok(LogLevelFilter::Off)),
+            ("error", Ok(LogLevelFilter::Error)),
+            ("warn",  Ok(LogLevelFilter::Warn)),
+            ("info",  Ok(LogLevelFilter::Info)),
+            ("debug", Ok(LogLevelFilter::Debug)),
+            ("trace", Ok(LogLevelFilter::Trace)),
+            ("OFF",   Ok(LogLevelFilter::Off)),
+            ("ERROR", Ok(LogLevelFilter::Error)),
+            ("WARN",  Ok(LogLevelFilter::Warn)),
+            ("INFO",  Ok(LogLevelFilter::Info)),
+            ("DEBUG", Ok(LogLevelFilter::Debug)),
+            ("TRACE", Ok(LogLevelFilter::Trace)),
+            ("asdf",  Err(())),
+            ];
+        for &(s, ref expected) in &tests {
+            assert_eq!(expected, &s.parse());
+        }
+    }
 
-     #[test]
-     fn test_loglevel_from_str() {
-         let tests = [
-             ("OFF",   Err(())),
-             ("error", Ok(LogLevel::Error)),
-             ("warn",  Ok(LogLevel::Warn)),
-             ("info",  Ok(LogLevel::Info)),
-             ("debug", Ok(LogLevel::Debug)),
-             ("trace", Ok(LogLevel::Trace)),
-             ("ERROR", Ok(LogLevel::Error)),
-             ("WARN",  Ok(LogLevel::Warn)),
-             ("INFO",  Ok(LogLevel::Info)),
-             ("DEBUG", Ok(LogLevel::Debug)),
-             ("TRACE", Ok(LogLevel::Trace)),
-             ("asdf",  Err(())),
-         ];
-         for &(s, ref expected) in &tests {
-             assert_eq!(expected, &s.parse());
-         }
-     }
+    #[cfg(not(feature = "freestanding"))]
+    #[test]
+    fn test_loglevel_from_str() {
+        let tests = [
+            ("OFF",   Err(())),
+            ("error", Ok(LogLevel::Error)),
+            ("warn",  Ok(LogLevel::Warn)),
+            ("info",  Ok(LogLevel::Info)),
+            ("debug", Ok(LogLevel::Debug)),
+            ("trace", Ok(LogLevel::Trace)),
+            ("ERROR", Ok(LogLevel::Error)),
+            ("WARN",  Ok(LogLevel::Warn)),
+            ("INFO",  Ok(LogLevel::Info)),
+            ("DEBUG", Ok(LogLevel::Debug)),
+            ("TRACE", Ok(LogLevel::Trace)),
+            ("asdf",  Err(())),
+            ];
+        for &(s, ref expected) in &tests {
+            assert_eq!(expected, &s.parse());
+        }
+    }
 
-     #[test]
-     fn test_loglevel_show() {
-         assert_eq!("INFO", LogLevel::Info.to_string());
-         assert_eq!("ERROR", LogLevel::Error.to_string());
-     }
+    #[cfg(feature = "freestanding")]
+    #[test]
+    fn test_loglevelfilter_from_str() {
+        let tests = [
+            ("OFF",   Ok(LogLevelFilter::Off)),
+            ("ERROR", Ok(LogLevelFilter::Error)),
+            ("WARN",  Ok(LogLevelFilter::Warn)),
+            ("INFO",  Ok(LogLevelFilter::Info)),
+            ("DEBUG", Ok(LogLevelFilter::Debug)),
+            ("TRACE", Ok(LogLevelFilter::Trace)),
+            ("asdf",  Err(())),
+            ];
+        for &(s, ref expected) in &tests {
+            assert_eq!(expected, &s.parse());
+        }
+    }
 
-     #[test]
-     fn test_loglevelfilter_show() {
-         assert_eq!("OFF", LogLevelFilter::Off.to_string());
-         assert_eq!("ERROR", LogLevelFilter::Error.to_string());
-     }
+    #[cfg(feature = "freestanding")]
+    #[test]
+    fn test_loglevel_from_str() {
+        let tests = [
+            ("OFF",   Err(())),
+            ("ERROR", Ok(LogLevel::Error)),
+            ("WARN",  Ok(LogLevel::Warn)),
+            ("INFO",  Ok(LogLevel::Info)),
+            ("DEBUG", Ok(LogLevel::Debug)),
+            ("TRACE", Ok(LogLevel::Trace)),
+            ("asdf",  Err(())),
+            ];
+        for &(s, ref expected) in &tests {
+            assert_eq!(expected, &s.parse());
+        }
+    }
 
-     #[test]
-     fn test_cross_cmp() {
-         assert!(LogLevel::Debug > LogLevelFilter::Error);
-         assert!(LogLevelFilter::Warn < LogLevel::Trace);
-         assert!(LogLevelFilter::Off < LogLevel::Error);
-     }
+    #[test]
+    fn test_loglevel_show() {
+        assert_eq!("INFO", LogLevel::Info.to_string());
+        assert_eq!("ERROR", LogLevel::Error.to_string());
+    }
 
-     #[test]
-     fn test_cross_eq() {
-         assert!(LogLevel::Error == LogLevelFilter::Error);
-         assert!(LogLevelFilter::Off != LogLevel::Error);
-         assert!(LogLevel::Trace == LogLevelFilter::Trace);
-     }
+    #[test]
+    fn test_loglevelfilter_show() {
+        assert_eq!("OFF", LogLevelFilter::Off.to_string());
+        assert_eq!("ERROR", LogLevelFilter::Error.to_string());
+    }
 
-     #[test]
-     fn test_to_log_level() {
-         assert_eq!(Some(LogLevel::Error), LogLevelFilter::Error.to_log_level());
-         assert_eq!(None, LogLevelFilter::Off.to_log_level());
-         assert_eq!(Some(LogLevel::Debug), LogLevelFilter::Debug.to_log_level());
-     }
+    #[test]
+    fn test_cross_cmp() {
+        assert!(LogLevel::Debug > LogLevelFilter::Error);
+        assert!(LogLevelFilter::Warn < LogLevel::Trace);
+        assert!(LogLevelFilter::Off < LogLevel::Error);
+    }
 
-     #[test]
-     fn test_to_log_level_filter() {
-         assert_eq!(LogLevelFilter::Error, LogLevel::Error.to_log_level_filter());
-         assert_eq!(LogLevelFilter::Trace, LogLevel::Trace.to_log_level_filter());
-     }
+    #[test]
+    fn test_cross_eq() {
+        assert!(LogLevel::Error == LogLevelFilter::Error);
+        assert!(LogLevelFilter::Off != LogLevel::Error);
+        assert!(LogLevel::Trace == LogLevelFilter::Trace);
+    }
 
-     #[test]
-     fn test_error_trait() {
-         let e = SetLoggerError(());
-         assert_eq!(e.description(), "set_logger() called multiple times");
-     }
+    #[test]
+    fn test_to_log_level() {
+        assert_eq!(Some(LogLevel::Error), LogLevelFilter::Error.to_log_level());
+        assert_eq!(None, LogLevelFilter::Off.to_log_level());
+        assert_eq!(Some(LogLevel::Debug), LogLevelFilter::Debug.to_log_level());
+    }
+
+    #[test]
+    fn test_to_log_level_filter() {
+        assert_eq!(LogLevelFilter::Error, LogLevel::Error.to_log_level_filter());
+        assert_eq!(LogLevelFilter::Trace, LogLevel::Trace.to_log_level_filter());
+    }
+
+    #[test]
+    #[cfg(not(feature = "freestanding"))]
+    fn test_error_trait() {
+        let e = SetLoggerError(());
+        assert_eq!(e.description(), "set_logger() called multiple times");
+    }
 }

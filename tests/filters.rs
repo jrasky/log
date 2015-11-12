@@ -21,6 +21,7 @@ impl Log for Logger {
     }
 }
 
+#[cfg(not(feature = "freestanding"))]
 fn main() {
     let mut a = None;
     set_logger(|max| {
@@ -30,6 +31,35 @@ fn main() {
         });
         a = Some(me.clone());
         Box::new(Logger(me))
+    }).unwrap();
+    let a = a.unwrap();
+
+    test(&a, LogLevelFilter::Off);
+    test(&a, LogLevelFilter::Error);
+    test(&a, LogLevelFilter::Warn);
+    test(&a, LogLevelFilter::Info);
+    test(&a, LogLevelFilter::Debug);
+    test(&a, LogLevelFilter::Trace);
+}
+
+#[cfg(feature = "freestanding")]
+fn main() {
+    use std::cell::UnsafeCell;
+    use std::mem;
+
+    let mut a = None;
+    let mut b = None;
+    let mut c: *mut Log = unsafe {mem::zeroed()};
+    let d: *const &'static Log = unsafe {mem::transmute(&c)};
+    set_logger(|max| {
+        let me = Arc::new(State {
+            last_log: Mutex::new(None),
+            filter: max,
+        });
+        a = Some(me.clone());
+        b = Some(UnsafeCell::new(Logger(me)));
+        c = b.as_ref().unwrap().get();
+        d
     }).unwrap();
     let a = a.unwrap();
 
